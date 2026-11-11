@@ -70,6 +70,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: {pattern: "part-*", merge-multiple: true}
+      - name: ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null
       - name: Concatenar tramos
         run: |
           N=${{ inputs.shards }}; : > lista.txt
