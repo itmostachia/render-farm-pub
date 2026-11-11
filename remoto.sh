@@ -24,7 +24,12 @@ for _ in $(seq 1 30); do
 done
 [ -n "$ID" ] || { echo "[remoto] no aparece el run"; exit 1; }
 echo "[remoto] run https://github.com/$REPO/actions/runs/$ID"
-gh run watch "$ID" -R "$REPO" --exit-status --interval 60 >/dev/null || { gh run view "$ID" -R "$REPO" --log-failed | tail -40; exit 1; }
+# una consulta por minuto (gh run watch gasta varias por vuelta y con varios agentes agota las 5000/h)
+while :; do
+  sleep 60
+  ST=$(gh run view "$ID" -R "$REPO" --json status,conclusion -q '.status+" "+.conclusion' 2>/dev/null || echo "? ")
+  case "$ST" in completed\ success) break;; completed*) gh run view "$ID" -R "$REPO" --log-failed | tail -40; exit 1;; esac
+done
 gh run download "$ID" -R "$REPO" -n final -D "$TMP/res"
 mkdir -p "$(dirname "$OUT")"; mv "$TMP/res/final.mp4" "$OUT"
 echo "[remoto] listo $OUT"
