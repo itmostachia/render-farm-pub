@@ -10,6 +10,7 @@ on:
       props:    {description: "props JSON", required: false, default: "{}"}
       shards:   {description: "cantidad de tramos en paralelo", required: false, default: "4"}
       extra:    {description: "flags extra de remotion", required: false, default: ""}
+      master:   {description: "si = loudnorm -14 LUFS; no = crudo (la pieza mezcla su audio aparte)", required: false, default: "si"}
 run-name: render ${{ inputs.job }}
 jobs:
   plan:
@@ -75,6 +76,10 @@ jobs:
           for i in $(seq 0 $((N-1))); do echo "file 'part-$i.mp4'" >> lista.txt; done
           ffmpeg -hide_banner -v error -f concat -safe 0 -i lista.txt -c copy video.mp4
           # master igual que render.sh local: H.264 High bt709, AAC 48k, -14 LUFS / -1.5 dBTP (loudnorm 2 pasadas)
+          if [ "${{ inputs.master }}" != "si" ]; then
+            ffmpeg -hide_banner -v error -y -i video.mp4 -i part--1.wav -map 0:v -map 1:a -c:v copy -c:a aac -b:a 320k -ar 48000 -shortest -movflags +faststart final.mp4
+            ls -la final.mp4; exit 0
+          fi
           J=$(ffmpeg -hide_banner -i part--1.wav -af loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json -f null - 2>&1 | sed -n '/{/,/}/p')
           g(){ echo "$J" | python3 -c "import json,sys;print(json.load(sys.stdin)['$1'])"; }
           ffmpeg -hide_banner -v error -y -i video.mp4 -i part--1.wav -map 0:v -map 1:a -c:v libx264 -profile:v high -preset slow -crf 16             -vf "scale=in_range=pc:out_range=tv,format=yuv420p" -color_range tv -color_primaries bt709 -color_trc bt709 -colorspace bt709 -movflags +faststart             -af "loudnorm=I=-14:TP=-1.5:LRA=11:measured_I=$(g input_i):measured_TP=$(g input_tp):measured_LRA=$(g input_lra):measured_thresh=$(g input_thresh):linear=true,aresample=48000"             -c:a aac -b:a 256k -ar 48000 -shortest final.mp4

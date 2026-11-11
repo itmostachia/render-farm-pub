@@ -1,6 +1,7 @@
 #!/bin/bash
 # Render Remotion en la granja de GitHub Actions (no usa CPU/RAM de la PC).
 # uso: bash remoto.sh <entry> <comp> <public-dir> <salida.mp4> ['<props json>'] [tramos=4]
+#   MASTER=no → devuelve crudo (video + audio AAC sin loudnorm) para piezas que mezclan aparte. EXTRA='--timeout=120000' flags extra.
 #   ej: bash remoto.sh src/e5-fable/index.ts Reel public-e5-fable ../out/x.mp4 '{"audio":true}' 4
 # Corre desde cualquier lado; empaqueta desde el motor (MOTOR=... para otro). Devuelve el MP4 ya masterizado (-14 LUFS).
 set -euo pipefail
@@ -14,7 +15,7 @@ OUT=$(realpath -m "$OUT")
 ( cd "$MOTOR" && tar -czf "$TMP/pkg.tar.gz" package.json package-lock.json remotion.config.ts tsconfig*.json src "$PUB" )
 echo "[remoto] $JOB paquete $(du -h "$TMP/pkg.tar.gz" | cut -f1)"
 gh release create "$JOB" -R "$REPO" --notes "" --title "$JOB" "$TMP/pkg.tar.gz" >/dev/null
-gh workflow run render.yml -R "$REPO" -f job="$JOB" -f entry="$ENTRY" -f comp="$COMP" -f public="$PUB" -f props="$PROPS" -f shards="$N"
+gh workflow run render.yml -R "$REPO" -f job="$JOB" -f entry="$ENTRY" -f comp="$COMP" -f public="$PUB" -f props="$PROPS" -f shards="$N" -f master="${MASTER:-si}" -f extra="${EXTRA:-}"
 ID=""
 for _ in $(seq 1 30); do
   sleep 4
