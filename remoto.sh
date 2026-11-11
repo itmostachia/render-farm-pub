@@ -18,13 +18,13 @@ gh release create "$JOB" -R "$REPO" --notes "" --title "$JOB" "$TMP/pkg.tar.gz" 
 gh workflow run render.yml -R "$REPO" -f job="$JOB" -f entry="$ENTRY" -f comp="$COMP" -f public="$PUB" -f props="$PROPS" -f shards="$N" -f master="${MASTER:-si}" -f extra="${EXTRA:-}"
 ID=""
 for _ in $(seq 1 30); do
-  sleep 4
+  sleep 8
   ID=$(gh run list -R "$REPO" -w render.yml -L 20 --json databaseId,displayTitle -q ".[] | select(.displayTitle==\"render $JOB\") | .databaseId" | head -1)
   [ -n "$ID" ] && break
 done
 [ -n "$ID" ] || { echo "[remoto] no aparece el run"; exit 1; }
 echo "[remoto] run https://github.com/$REPO/actions/runs/$ID"
-gh run watch "$ID" -R "$REPO" --exit-status --interval 20 >/dev/null || { gh run view "$ID" -R "$REPO" --log-failed | tail -40; exit 1; }
+gh run watch "$ID" -R "$REPO" --exit-status --interval 60 >/dev/null || { gh run view "$ID" -R "$REPO" --log-failed | tail -40; exit 1; }
 gh run download "$ID" -R "$REPO" -n final -D "$TMP/res"
 mkdir -p "$(dirname "$OUT")"; mv "$TMP/res/final.mp4" "$OUT"
 echo "[remoto] listo $OUT"
