@@ -1,17 +1,16 @@
-# Granja de renders Remotion: recibe un paquete (release asset), renderiza un tramo de frames y lo devuelve como artifact.
+# Granja de renders Remotion en repo PÚBLICO: el paquete, los tramos y el final viajan cifrados
+# (AES-256 con la clave del secreto FARM_KEY). Lo único visible es este código y la cantidad de tramos.
 name: render
 on:
   workflow_dispatch:
     inputs:
-      job:      {description: "id del trabajo (tag del release con el paquete)", required: true}
-      entry:    {description: "entry de remotion, ej src/e5-fable/index.ts", required: true}
-      comp:     {description: "composición", required: true}
-      public:   {description: "carpeta public", required: true}
-      props:    {description: "props JSON", required: false, default: "{}"}
-      shards:   {description: "cantidad de tramos en paralelo", required: false, default: "4"}
-      extra:    {description: "flags extra de remotion", required: false, default: ""}
-      master:   {description: "si = loudnorm -14 LUFS; no = crudo (la pieza mezcla su audio aparte)", required: false, default: "si"}
+      job:    {description: "id del trabajo (tag del release con el paquete cifrado)", required: true}
+      shards: {description: "cantidad de tramos en paralelo", required: false, default: "4"}
+      master: {description: "si = loudnorm -14 LUFS; no = crudo", required: false, default: "si"}
 run-name: render ${{ inputs.job }}
+env:
+  FARM_KEY: ${{ secrets.FARM_KEY }}
+  ENC: "-aes-256-cbc -pbkdf2 -iter 200000"
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -23,17 +22,17 @@ jobs:
   render:
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
     strategy:
       fail-fast: true
       matrix:
         i: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
-      - name: Bajar paquete
+      - name: Bajar y descifrar paquete
         env: {GH_TOKEN: "${{ github.token }}"}
         run: |
-          gh release download "${{ inputs.job }}" -R "${{ github.repository }}" -p 'pkg.tar.gz' -D .
-          mkdir w && tar -xzf pkg.tar.gz -C w && rm pkg.tar.gz
+          gh release download "${{ inputs.job }}" -R "${{ github.repository }}" -p 'pkg.enc' -D .
+          mkdir w && openssl enc -d $ENC -pass env:FARM_KEY -in pkg.enc | tar -xz -C w && rm pkg.enc
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - name: Cache node_modules
@@ -44,26 +43,29 @@ jobs:
       - name: Dependencias
         working-directory: w
         run: |
-          [ -d node_modules ] || npm ci --no-audit --no-fund
+          [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null
           sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-color-emoji >/dev/null
       - name: Render del tramo
         working-directory: w
         run: |
-          # la config local fuerza ANGLE (Windows); en Linux va swangle
+          # entry/comp/public/extra viajan dentro del paquete (job.json), no en los inputs públicos
+          j(){ python3 -c "import json;print(json.load(open('job.json')).get('$1',''))"; }
+          ENTRY=$(j entry); COMP=$(j comp); PUB=$(j public); EXTRA=$(j extra)
           echo "import {Config} from '@remotion/cli/config'; Config.setVideoImageFormat('jpeg'); Config.setJpegQuality(92);" > remotion.config.ts
           N=${{ inputs.shards }}; I=${{ matrix.i }}
           if [ "$I" = "-1" ]; then
-            npx remotion render "${{ inputs.entry }}" "${{ inputs.comp }}" ../part--1.wav --codec=wav --public-dir="${{ inputs.public }}" --props='${{ inputs.props }}' ${{ inputs.extra }}
-            exit 0
+            npx remotion render "$ENTRY" "$COMP" ../part--1.wav --codec=wav --public-dir="$PUB" --props=props.json --log=error $EXTRA
+          else
+            TOTAL=$(FORCE_COLOR=0 npx remotion compositions "$ENTRY" --public-dir="$PUB" --props=props.json 2>/dev/null | awk -v c="$COMP" '$1==c{for(i=2;i<=NF;i++) if($i ~ /^[0-9]+x[0-9]+$/){print $(i+1); exit}}')
+            [ -n "$TOTAL" ] || { echo "no encontré la composición"; exit 1; }
+            A=$(( TOTAL * I / N )); B=$(( TOTAL * (I+1) / N - 1 ))
+            echo "frames $A-$B de $TOTAL"
+            npx remotion render "$ENTRY" "$COMP" ../part-$I.mp4 --public-dir="$PUB" --props=props.json --log=error \
+              --frames=$A-$B --gl=swangle --concurrency=2 --crf=14 --pixel-format=yuv420p --muted $EXTRA
           fi
-          TOTAL=$(FORCE_COLOR=0 npx remotion compositions "${{ inputs.entry }}" --public-dir="${{ inputs.public }}" --props='${{ inputs.props }}' 2>/dev/null | awk -v c="${{ inputs.comp }}" '$1==c{for(i=2;i<=NF;i++) if($i ~ /^[0-9]+x[0-9]+$/){print $(i+1); exit}}')
-          [ -n "$TOTAL" ] || { npx remotion compositions "${{ inputs.entry }}" --public-dir="${{ inputs.public }}" --props='${{ inputs.props }}'; exit 1; }
-          A=$(( TOTAL * I / N )); B=$(( TOTAL * (I+1) / N - 1 ))
-          echo "frames $A-$B de $TOTAL"
-          npx remotion render "${{ inputs.entry }}" "${{ inputs.comp }}" ../part-$I.mp4 --public-dir="${{ inputs.public }}" \
-            --props='${{ inputs.props }}' --frames=$A-$B --gl=swangle --concurrency=2 --crf=14 --pixel-format=yuv420p --muted ${{ inputs.extra }}
+          cd .. && f=$(ls part-$I.*) && openssl enc $ENC -salt -pass env:FARM_KEY -in "$f" -out "part-$I.enc" && rm "$f"
       - uses: actions/upload-artifact@v4
-        with: {name: "part-${{ matrix.i }}", path: "part-${{ matrix.i }}.*", retention-days: 1}
+        with: {name: "part-${{ matrix.i }}", path: "part-${{ matrix.i }}.enc", retention-days: 1}
   unir:
     needs: [plan, render]
     runs-on: ubuntu-latest
@@ -72,22 +74,26 @@ jobs:
         with: {pattern: "part-*", merge-multiple: true}
       - name: ffmpeg
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null
-      - name: Concatenar tramos
+      - name: Descifrar, concatenar y cifrar el final
         run: |
           N=${{ inputs.shards }}; : > lista.txt
-          for i in $(seq 0 $((N-1))); do echo "file 'part-$i.mp4'" >> lista.txt; done
+          for i in $(seq 0 $((N-1))); do openssl enc -d $ENC -pass env:FARM_KEY -in part-$i.enc -out part-$i.mp4; echo "file 'part-$i.mp4'" >> lista.txt; done
+          openssl enc -d $ENC -pass env:FARM_KEY -in part--1.enc -out part--1.wav
           ffmpeg -hide_banner -v error -f concat -safe 0 -i lista.txt -c copy video.mp4
-          # master igual que render.sh local: H.264 High bt709, AAC 48k, -14 LUFS / -1.5 dBTP (loudnorm 2 pasadas)
           if [ "${{ inputs.master }}" != "si" ]; then
             ffmpeg -hide_banner -v error -y -i video.mp4 -i part--1.wav -map 0:v -map 1:a -c:v copy -c:a aac -b:a 320k -ar 48000 -shortest -movflags +faststart final.mp4
-            ls -la final.mp4; exit 0
+          else
+            J=$(ffmpeg -hide_banner -i part--1.wav -af loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json -f null - 2>&1 | sed -n '/{/,/}/p')
+            g(){ echo "$J" | python3 -c "import json,sys;print(json.load(sys.stdin)['$1'])"; }
+            ffmpeg -hide_banner -v error -y -i video.mp4 -i part--1.wav -map 0:v -map 1:a -c:v libx264 -profile:v high -preset slow -crf 16 \
+              -vf "scale=in_range=pc:out_range=tv,format=yuv420p" -color_range tv -color_primaries bt709 -color_trc bt709 -colorspace bt709 -movflags +faststart \
+              -af "loudnorm=I=-14:TP=-1.5:LRA=11:measured_I=$(g input_i):measured_TP=$(g input_tp):measured_LRA=$(g input_lra):measured_thresh=$(g input_thresh):linear=true,aresample=48000" \
+              -c:a aac -b:a 256k -ar 48000 -shortest final.mp4
           fi
-          J=$(ffmpeg -hide_banner -i part--1.wav -af loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json -f null - 2>&1 | sed -n '/{/,/}/p')
-          g(){ echo "$J" | python3 -c "import json,sys;print(json.load(sys.stdin)['$1'])"; }
-          ffmpeg -hide_banner -v error -y -i video.mp4 -i part--1.wav -map 0:v -map 1:a -c:v libx264 -profile:v high -preset slow -crf 16             -vf "scale=in_range=pc:out_range=tv,format=yuv420p" -color_range tv -color_primaries bt709 -color_trc bt709 -colorspace bt709 -movflags +faststart             -af "loudnorm=I=-14:TP=-1.5:LRA=11:measured_I=$(g input_i):measured_TP=$(g input_tp):measured_LRA=$(g input_lra):measured_thresh=$(g input_thresh):linear=true,aresample=48000"             -c:a aac -b:a 256k -ar 48000 -shortest final.mp4
-          ls -la final.mp4
+          openssl enc $ENC -salt -pass env:FARM_KEY -in final.mp4 -out final.enc
+          rm -f final.mp4 video.mp4 part-*.mp4 part--1.wav
       - uses: actions/upload-artifact@v4
-        with: {name: "final", path: final.mp4, retention-days: 1}
+        with: {name: "final", path: final.enc, retention-days: 1}
       - name: Borrar paquete
         env: {GH_TOKEN: "${{ github.token }}"}
         if: always()
