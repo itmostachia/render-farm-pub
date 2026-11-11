@@ -16,11 +16,13 @@ JOB=r$(date +%Y%m%d-%H%M%S)-$RANDOM
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 OUT=$(realpath -m "$OUT")
+# openssl de Windows no entiende rutas /c/...: pasarle rutas mixtas (C:/...)
+w(){ cygpath -m "$1" 2>/dev/null || echo "$1"; }
 mkdir "$TMP/meta"
 printf '%s' "$PROPS" > "$TMP/meta/props.json"
 E="$ENTRY" C="$COMP" P="$PUB" X="${EXTRA:-}" F="$(cygpath -w "$TMP/meta/job.json")" python -c "import json,os;json.dump({'entry':os.environ['E'],'comp':os.environ['C'],'public':os.environ['P'],'extra':os.environ['X']},open(os.environ['F'],'w'))"
 ( cd "$MOTOR" && tar -czf - package.json package-lock.json remotion.config.ts tsconfig*.json src "$PUB" -C "$TMP/meta" job.json props.json ) \
-  | openssl enc $ENC -salt -pass file:"$KEY" -out "$TMP/pkg.enc"
+  | openssl enc $ENC -salt -pass file:"$(w "$KEY")" -out "$(w "$TMP/pkg.enc")"
 echo "[remoto] $JOB paquete cifrado $(du -h "$TMP/pkg.enc" | cut -f1)"
 gh release create "$JOB" -R "$REPO" --notes "" --title "$JOB" "$TMP/pkg.enc" >/dev/null
 gh workflow run render.yml -R "$REPO" -f job="$JOB" -f shards="$N" -f master="${MASTER:-si}"
@@ -40,5 +42,5 @@ while :; do
 done
 gh run download "$ID" -R "$REPO" -n final -D "$TMP/res"
 mkdir -p "$(dirname "$OUT")"
-openssl enc -d $ENC -pass file:"$KEY" -in "$TMP/res/final.enc" -out "$OUT"
+openssl enc -d $ENC -pass file:"$(w "$KEY")" -in "$(w "$TMP/res/final.enc")" -out "$(w "$OUT")"
 echo "[remoto] listo $OUT"
