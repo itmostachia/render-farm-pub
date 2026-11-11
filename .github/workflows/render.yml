@@ -8,6 +8,7 @@ on:
       shards: {description: "cantidad de tramos en paralelo", required: false, default: "4"}
       master: {description: "si = loudnorm -14 LUFS; no = crudo", required: false, default: "si"}
 run-name: render ${{ inputs.job }}
+permissions: {contents: write, actions: read}
 env:
   FARM_KEY: ${{ secrets.FARM_KEY }}
   ENC: "-aes-256-cbc -pbkdf2 -iter 200000"
