@@ -80,7 +80,9 @@ jobs:
           for i in $(seq 0 $((N-1))); do openssl enc -d $ENC -pass env:FARM_KEY -in part-$i.enc -out part-$i.mp4; echo "file 'part-$i.mp4'" >> lista.txt; done
           openssl enc -d $ENC -pass env:FARM_KEY -in part--1.enc -out part--1.wav
           ffmpeg -hide_banner -v error -f concat -safe 0 -i lista.txt -c copy video.mp4
-          if [ "${{ inputs.master }}" != "si" ]; then
+          # audio mudo (loudnorm da -inf) → sin masterizar
+          if [ "${{ inputs.master }}" = "si" ] && ffmpeg -hide_banner -i part--1.wav -af loudnorm=print_format=json -f null - 2>&1 | grep -q '"input_i" : "-inf"'; then MASTER=no; else MASTER=${{ inputs.master }}; fi
+          if [ "$MASTER" != "si" ]; then
             ffmpeg -hide_banner -v error -y -i video.mp4 -i part--1.wav -map 0:v -map 1:a -c:v copy -c:a aac -b:a 320k -ar 48000 -shortest -movflags +faststart final.mp4
           else
             J=$(ffmpeg -hide_banner -i part--1.wav -af loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json -f null - 2>&1 | sed -n '/{/,/}/p')
