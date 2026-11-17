@@ -1,0 +1,77 @@
+# Trabajos de ffmpeg + Python en un runner Windows (mismo entorno que la PC: mismas rutas, mismo ffmpeg).
+# Repo PÚBLICO: las bases, el trabajo y los resultados viajan cifrados (AES-256, secreto FARM_KEY).
+# El registro público no muestra nada del trabajo: toda la salida va adentro del paquete cifrado «rev».
+name: var
+on:
+  workflow_dispatch:
+    inputs:
+      job:    {description: "tag del release con el trabajo cifrado", required: true}
+      bases:  {description: "tags de releases con las bases cifradas, separados por espacio", required: false, default: ""}
+      shards: {description: "cantidad de tandas en paralelo", required: false, default: "1"}
+run-name: var ${{ inputs.job }}
+permissions: {contents: write, actions: read}
+env:
+  FARM_KEY: ${{ secrets.FARM_KEY }}
+  ENC: "-aes-256-cbc -pbkdf2 -iter 200000"
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: python3 -c "import json;print('matrix='+json.dumps(list(range(int('${{ inputs.shards }}')))))" >> $GITHUB_OUTPUT
+  correr:
+    needs: plan
+    runs-on: windows-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        i: ${{ fromJson(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: ffmpeg 9.0
+        run: |
+          curl -sSL --retry 3 -o /c/ff.7z https://github.com/GyanD/codexffmpeg/releases/download/9.0/ffmpeg-9.0-full_build.7z
+          7z x -y -o/c/ffmpeg /c/ff.7z > /dev/null && rm /c/ff.7z
+          /c/ffmpeg/ffmpeg-9.0-full_build/bin/ffmpeg -hide_banner -version | head -1
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Librerías
+        run: python -m pip install -q numpy==2.4.3 pillow==12.1.1 opencv-python-headless==5.0.0.93 psutil scipy==1.17.1
+      - name: Bajar y descifrar
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: |
+          for t in ${{ inputs.bases }} ${{ inputs.job }}; do
+            gh release download "$t" -R "${{ github.repository }}" -p '*.enc' -D "/c/farm/$t"
+          done
+          for f in /c/farm/*/*.enc; do
+            openssl enc -d $ENC -pass env:FARM_KEY -in "$f" 2>/dev/null | tar -x -C /c/ 2>/dev/null || { echo "no se pudo abrir un paquete"; exit 1; }
+            rm "$f"
+          done
+          echo "paquetes abiertos"
+      - name: Trabajo
+        env:
+          FARM_SHARD: ${{ matrix.i }}
+          FARM_SHARDS: ${{ inputs.shards }}
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: |
+          mkdir -p /c/farm-out/rev /c/farm-out/full
+          bash /c/farm-job/run.sh > /c/farm-out/rev/registro-${{ matrix.i }}.txt 2>&1
+      - name: Cifrar resultados
+        if: always()
+        run: |
+          mkdir -p /c/farm-out/rev /c/farm-out/full && cd /c/farm-out
+          tar -cf - rev  | openssl enc $ENC -salt -pass env:FARM_KEY -out /c/rev-${{ matrix.i }}.enc
+          tar -cf - full | openssl enc $ENC -salt -pass env:FARM_KEY -out /c/full-${{ matrix.i }}.enc
+          ls -la /c/rev-${{ matrix.i }}.enc /c/full-${{ matrix.i }}.enc | awk '{print $5}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: "rev-${{ matrix.i }}", path: "C:/rev-${{ matrix.i }}.enc", retention-days: 14}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: "full-${{ matrix.i }}", path: "C:/full-${{ matrix.i }}.enc", retention-days: 30}
